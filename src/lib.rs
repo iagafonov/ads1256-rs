@@ -13,6 +13,9 @@
 #[deny(missing_docs)]
 extern crate embedded_hal as hal;
 
+use std::error;
+use std::fmt::{self, Debug, Display};
+
 //use hal::blocking::spi::{Transfer, Write};
 use hal::blocking::delay::DelayUs;
 
@@ -172,6 +175,64 @@ impl Default for Config {
     }
 }
 
+/// A driver error.
+///
+/// Note that the `Error` is generic over embedded_hal's Spi, OutputPin, InputPin with no type bounds.
+/// The [`Debug`], [`Display`], and [`error::Error`] traits will be added if available.
+/// Use a Newtype to add other common bounds if needed.
+pub enum Error<ES, EO, EI> {
+    /// SPI bus error
+    Spi(ES),
+    /// GPIO output pin error
+    Output(EO),
+    /// GPIO input pin error
+    Input(EI),
+}
+
+impl<ES: Debug, EO: Debug, EI: Debug> Debug for Error<ES, EO, EI> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Spi(e) => Debug::fmt(e, f),
+            Self::Output(e) => Debug::fmt(e, f),
+            Self::Input(e) => Debug::fmt(e, f),
+        }
+    }
+}
+
+impl<ES: Display, EO: Display, EI: Display> Display for Error<ES, EO, EI> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Spi(e) => Display::fmt(e, f),
+            Self::Output(e) => Display::fmt(e, f),
+            Self::Input(e) => Display::fmt(e, f),
+        }
+    }
+}
+
+impl<ES: error::Error, EO: error::Error, EI: error::Error> error::Error for Error<ES, EO, EI> {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            Self::Spi(e) => e.source(),
+            Self::Output(e) => e.source(),
+            Self::Input(e) => e.source(),
+        }
+    }
+}
+
+impl<ES, EO, EI> Error<ES, EO, EI> {
+    fn spi_err(e: ES) -> Error<ES, EO, EI> {
+        Self::Spi(e)
+    }
+
+    fn output_err(e: EO) -> Error<ES, EO, EI> {
+        Self::Output(e)
+    }
+
+    fn input_err(e: EI) -> Error<ES, EO, EI> {
+        Self::Input(e)
+    }
+}
+
 //ADS1256 driver
 #[derive(Debug, Default)]
 pub struct ADS1256<SPI, CS, RST, DRDY, D> {
@@ -186,9 +247,9 @@ pub struct ADS1256<SPI, CS, RST, DRDY, D> {
     config: Config,
 }
 
-impl<SPI, CS, RST, DRDY, D, E, EO, EI> ADS1256<SPI, CS, RST, DRDY, D>
+impl<SPI, CS, RST, DRDY, D, ES, EO, EI> ADS1256<SPI, CS, RST, DRDY, D>
 where
-    SPI: hal::blocking::spi::Transfer<u8, Error = E> + hal::blocking::spi::Write<u8, Error = E>,
+    SPI: hal::blocking::spi::Transfer<u8, Error = ES> + hal::blocking::spi::Write<u8, Error = ES>,
     CS: hal::digital::v2::OutputPin<Error = EO>,
     RST: hal::digital::v2::OutputPin<Error = EO>,
     DRDY: hal::digital::v2::InputPin<Error = EI>,
@@ -201,7 +262,7 @@ where
         reset_pin: RST,
         data_ready_pin: DRDY,
         delay: D,
-    ) -> Result<Self, E> {
+    ) -> Result<Self, Error<ES, EO, EI>> {
         let mut ads1256 = ADS1256 {
             spi,
             cs_pin,
@@ -212,75 +273,79 @@ where
         };
 
         //stop read data continuously
-        ads1256.wait_for_ready().unwrap();
+        ads1256.wait_for_ready()?;
         ads1256.send_command(Command::SDATAC)?;
         ads1256.delay.delay_us(10);
         Ok(ads1256)
     }
 
-    pub fn set_config(&mut self, config: &Config) -> Result<(), E> {
+    pub fn set_config(&mut self, config: &Config) -> Result<(), Error<ES, EO, EI>> {
         self.config =  *config;
         self.init()?;
         Ok(())
     }
 
-    pub fn init(&mut self) -> Result<(), E> {
+    pub fn init(&mut self) -> Result<(), Error<ES, EO, EI>> {
         let adcon = self.read_register(Register::ADCON)?;
         //disable clkout and set the gain
         let new_adcon = (adcon & 0x07) | self.config.gain.bits();
         self.write_register(Register::ADCON, new_adcon)?;
         self.write_register(Register::DRATE, self.config.sampling_rate.bits())?;
         self.send_command(Command::SELFCAL)?;
-        self.wait_for_ready().unwrap(); //wait for calibration to complete
+        self.wait_for_ready()?; //wait for calibration to complete
         Ok(())
     }
 
     ///Returns true if conversion data is ready to  transmit to the host
-    pub fn wait_for_ready(&self) -> Result<bool, EI> {
-        self.data_ready_pin.is_low()
+    pub fn wait_for_ready(&self) -> Result<bool, Error<ES, EO, EI>> {
+        self.data_ready_pin.is_low().map_err(Error::input_err)
     }
 
     ///Read data from specified register
-    pub fn read_register(&mut self, reg: Register) -> Result<u8, E> {
-        self.cs_pin.set_low().unwrap();
+    pub fn read_register(&mut self, reg: Register) -> Result<u8, Error<ES, EO, EI>> {
+        self.cs_pin.set_low().map_err(Error::output_err)?;
         //write
-        self.spi.write(&[(Command::RREG.bits() | reg.addr()), 0x00])?;
+        self.spi
+            .write(&[(Command::RREG.bits() | reg.addr()), 0x00])
+            .map_err(Error::spi_err)?;
         self.delay.delay_us(10); //t6 delay
          //read
         let mut rx_buf = [0];
-        self.spi.transfer(&mut rx_buf)?;
+        self.spi.transfer(&mut rx_buf).map_err(Error::spi_err)?;
         self.delay.delay_us(5); //t11
-        self.cs_pin.set_high().unwrap();
+        self.cs_pin.set_high().map_err(Error::output_err)?;
         Ok(rx_buf[0])
     }
 
     ///Write data to specified register
-    pub fn write_register(&mut self, reg: Register, val: u8) -> Result<(), E> {
-        self.cs_pin.set_low().unwrap();
+    pub fn write_register(&mut self, reg: Register, val: u8) -> Result<(), Error<ES, EO, EI>> {
+        self.cs_pin.set_low().map_err(Error::output_err)?;
 
         let mut tx_buf = [(Command::WREG.bits() | reg.addr()), 0x00, val];
-        self.spi.transfer(&mut tx_buf)?;
+        self.spi.transfer(&mut tx_buf).map_err(Error::spi_err)?;
         self.delay.delay_us(5); //t11
-        self.cs_pin.set_high().unwrap();
+        self.cs_pin.set_high().map_err(Error::output_err)?;
         Ok(())
     }
 
-    pub fn send_command(&mut self, cmd: Command) -> Result<(), E> {
-        self.cs_pin.set_low().unwrap();
-        self.spi.write(&[cmd.bits()])?;
-        self.cs_pin.set_high().unwrap();
+    pub fn send_command(&mut self, cmd: Command) -> Result<(), Error<ES, EO, EI>> {
+        self.cs_pin.set_low().map_err(Error::output_err)?;
+        self.spi.write(&[cmd.bits()]).map_err(Error::spi_err)?;
+        self.cs_pin.set_high().map_err(Error::output_err)?;
         Ok(())
     }
 
     ///Read 24 bit value from ADS1256. Issue this command after DRDY goes low
-    fn read_raw_data(&mut self) -> Result<i32, E> {
-        self.cs_pin.set_low().unwrap();
-        self.spi.write(&[Command::RDATA.bits()])?;
+    fn read_raw_data(&mut self) -> Result<i32, Error<ES, EO, EI>> {
+        self.cs_pin.set_low().map_err(Error::output_err)?;
+        self.spi
+            .write(&[Command::RDATA.bits()])
+            .map_err(Error::spi_err)?;
         self.delay.delay_us(10); //t6 delay = 50*0.13=6.5us
          //receive 3 bytes from spi
         let mut buf = [0u8; 3];
-        self.spi.transfer(&mut buf)?;
-        self.cs_pin.set_high().unwrap();
+        self.spi.transfer(&mut buf).map_err(Error::spi_err)?;
+        self.cs_pin.set_high().map_err(Error::output_err)?;
 
         let mut result: u32 = ((buf[0] as u32) << 16) |
                               ((buf[1] as u32) << 8) | (buf[2] as u32);
@@ -292,9 +357,9 @@ where
     }
 
     ///Read an ADC channel and returned  24 bit value as i32
-    pub fn read_channel(&mut self, ch1: Channel, ch2: Channel) -> Result<i32, E> {
+    pub fn read_channel(&mut self, ch1: Channel, ch2: Channel) -> Result<i32, Error<ES, EO, EI>> {
         //wait form data ready pin to be low
-        self.wait_for_ready().unwrap();
+        self.wait_for_ready()?;
 
         //select channel
         self.write_register(Register::MUX, ch1.bits() << 4 | ch2.bits())?;
