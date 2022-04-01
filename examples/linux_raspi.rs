@@ -6,7 +6,7 @@
 extern crate ads1256;
 extern crate linux_embedded_hal as linux_hal;
 
-use linux_hal::spidev::{self, SpidevOptions};
+use linux_hal::spidev::{SpiModeFlags, SpidevOptions};
 use linux_hal::sysfs_gpio::Direction;
 use linux_hal::{Delay, Pin, Spidev};
 
@@ -25,7 +25,7 @@ fn main() {
         .bits_per_word(8)
         .max_speed_hz(1_500_000)
         .lsb_first(false)
-        .mode(spidev::SPI_MODE_1)
+        .mode(SpiModeFlags::SPI_MODE_1)
         .build();
     spi.configure(&options).unwrap();
 
