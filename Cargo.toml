@@ -1,8 +1,8 @@
 [package]
 name = "ads1256"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2018"
-authors = ["Vigen Gasparyan"]
+authors = ["Vigen Gasparyan", "Christian Zuckschwerdt"]
 
 license = "MIT OR Apache-2.0"
 description = "A platform agnostic driver to interface the ADS1256 (ADC)"
