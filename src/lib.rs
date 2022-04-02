@@ -1,6 +1,6 @@
 //! A platform agnostic driver to interface with the  ADS1256 analog-digital converter
 //!
-//! This driver was built using [`embedded-hal`] traits.
+//! This driver was built using [`embedded_hal`] traits.
 //!
 //!
 //!
@@ -8,9 +8,9 @@
 //!   TODO:
 //!
 //!
-//! [datasheet] : http://www.ti.com/lit/ds/symlink/ads1256.pdf
+//! [ADS1256 datasheet](http://www.ti.com/lit/ds/symlink/ads1256.pdf)
 
-#[deny(missing_docs)]
+//#![deny(missing_docs)]
 extern crate embedded_hal as hal;
 
 use std::error;
@@ -22,8 +22,8 @@ use hal::blocking::delay::DelayUs;
 /// ADC reference voltage in volts
 const REF_VOLTS: f64 = 2.5;
 
-//The operation of the ADS1256 is controlled through a set of registers.
-//ADS1256 datasheet,  Table 23.
+/// The operation of the ADS1256 is controlled through a set of registers.
+/// ADS1256 datasheet,  Table 23.
 #[derive(Debug, Copy, Clone)]
 pub enum Register {
     STATUS = 0x00,
@@ -72,7 +72,7 @@ impl Command {
     }
 }
 
-///Programmable Gain Amplifier (pga) ads1256 datasheet, p. 16
+/// Programmable Gain Amplifier (pga) ads1256 datasheet, p. 16
 #[derive(Debug, Copy, Clone)]
 pub enum PGA {
     Gain1 = 0b000,
@@ -100,7 +100,7 @@ impl PGA {
     }
 }
 
-//Sampling rate
+/// ADC Sampling rate.
 #[derive(Debug, Copy, Clone)]
 pub enum SamplingRate {
     Sps30000 = 0b1111_0000,
@@ -133,7 +133,7 @@ impl Default for SamplingRate {
     }
 }
 
-//Channel
+/// ADC Channel.
 #[derive(Debug, Copy, Clone)]
 pub enum Channel {
     AIN0 = 0,
@@ -153,7 +153,7 @@ impl Channel {
     }
 }
 
-
+/// Chip configuration.
 #[derive(Debug, Copy, Clone)]
 pub struct Config {
     pub sampling_rate: SamplingRate,
@@ -171,7 +171,10 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config {sampling_rate: SamplingRate::Sps1000, gain: PGA::Gain1}
+        Config {
+            sampling_rate: SamplingRate::Sps1000,
+            gain: PGA::Gain1,
+        }
     }
 }
 
@@ -233,14 +236,14 @@ impl<ES, EO, EI> Error<ES, EO, EI> {
     }
 }
 
-//ADS1256 driver
+/// ADS1256 driver
 #[derive(Debug, Default)]
 pub struct ADS1256<SPI, CS, RST, DRDY, D> {
-    ///Dedicated GPIO pin  that is used to select ADS1256 chip on the SPI bus
+    /// Dedicated GPIO pin  that is used to select ADS1256 chip on the SPI bus
     cs_pin: CS,
-    ///Dedicated GPIO pin to reset the ADS1256
+    /// Dedicated GPIO pin to reset the ADS1256
     reset_pin: RST,
-    ///Dedicated GPIO pin to indicate that conversion is ready
+    /// Dedicated GPIO pin to indicate that conversion is ready
     data_ready_pin: DRDY,
     spi: SPI,
     delay: D,
@@ -255,7 +258,7 @@ where
     DRDY: hal::digital::v2::InputPin<Error = EI>,
     D: DelayUs<u8>,
 {
-    /// Creates a new driver from a SPI
+    /// Creates a new driver from a SPI.
     pub fn new(
         spi: SPI,
         cs_pin: CS,
@@ -269,65 +272,69 @@ where
             reset_pin,
             data_ready_pin,
             delay,
-            config : Config::default(),
+            config: Config::default(),
         };
 
-        //stop read data continuously
+        // stop read data continuously
         ads1256.wait_for_ready()?;
         ads1256.send_command(Command::SDATAC)?;
         ads1256.delay.delay_us(10);
         Ok(ads1256)
     }
 
+    /// Set chip configuration, calls  [`Self::init()`] afterwards.
     pub fn set_config(&mut self, config: &Config) -> Result<(), Error<ES, EO, EI>> {
-        self.config =  *config;
+        self.config = *config;
         self.init()?;
         Ok(())
     }
 
+    /// Initialize the ADC to a configuration.
     pub fn init(&mut self) -> Result<(), Error<ES, EO, EI>> {
         let adcon = self.read_register(Register::ADCON)?;
-        //disable clkout and set the gain
+        // disable clkout and set the gain
         let new_adcon = (adcon & 0x07) | self.config.gain.bits();
         self.write_register(Register::ADCON, new_adcon)?;
         self.write_register(Register::DRATE, self.config.sampling_rate.bits())?;
         self.send_command(Command::SELFCAL)?;
-        self.wait_for_ready()?; //wait for calibration to complete
+        self.wait_for_ready()?; // wait for calibration to complete
         Ok(())
     }
 
-    ///Returns true if conversion data is ready to  transmit to the host
+    /// Returns true if conversion data is ready to  transmit to the host
     pub fn wait_for_ready(&self) -> Result<bool, Error<ES, EO, EI>> {
         self.data_ready_pin.is_low().map_err(Error::input_err)
     }
 
-    ///Read data from specified register
+    /// Read data from specified register.
     pub fn read_register(&mut self, reg: Register) -> Result<u8, Error<ES, EO, EI>> {
         self.cs_pin.set_low().map_err(Error::output_err)?;
-        //write
+        // write
         self.spi
             .write(&[(Command::RREG.bits() | reg.addr()), 0x00])
             .map_err(Error::spi_err)?;
-        self.delay.delay_us(10); //t6 delay
-         //read
+        self.delay.delay_us(10); // t6 delay
+
+        // read
         let mut rx_buf = [0];
         self.spi.transfer(&mut rx_buf).map_err(Error::spi_err)?;
-        self.delay.delay_us(5); //t11
+        self.delay.delay_us(5); // t11
         self.cs_pin.set_high().map_err(Error::output_err)?;
         Ok(rx_buf[0])
     }
 
-    ///Write data to specified register
+    /// Write data to specified register.
     pub fn write_register(&mut self, reg: Register, val: u8) -> Result<(), Error<ES, EO, EI>> {
         self.cs_pin.set_low().map_err(Error::output_err)?;
 
         let mut tx_buf = [(Command::WREG.bits() | reg.addr()), 0x00, val];
         self.spi.transfer(&mut tx_buf).map_err(Error::spi_err)?;
-        self.delay.delay_us(5); //t11
+        self.delay.delay_us(5); // t11
         self.cs_pin.set_high().map_err(Error::output_err)?;
         Ok(())
     }
 
+    /// Send a command to the ADC.
     pub fn send_command(&mut self, cmd: Command) -> Result<(), Error<ES, EO, EI>> {
         self.cs_pin.set_low().map_err(Error::output_err)?;
         self.spi.write(&[cmd.bits()]).map_err(Error::spi_err)?;
@@ -335,48 +342,49 @@ where
         Ok(())
     }
 
-    ///Read 24 bit value from ADS1256. Issue this command after DRDY goes low
+    /// Read 24 bit value from ADS1256. Issue this command after DRDY goes low
     fn read_raw_data(&mut self) -> Result<i32, Error<ES, EO, EI>> {
         self.cs_pin.set_low().map_err(Error::output_err)?;
         self.spi
             .write(&[Command::RDATA.bits()])
             .map_err(Error::spi_err)?;
-        self.delay.delay_us(10); //t6 delay = 50*0.13=6.5us
-         //receive 3 bytes from spi
+        self.delay.delay_us(10); // t6 delay = 50*0.13=6.5us
+
+        // receive 3 bytes from spi
         let mut buf = [0u8; 3];
         self.spi.transfer(&mut buf).map_err(Error::spi_err)?;
         self.cs_pin.set_high().map_err(Error::output_err)?;
 
-        let mut result: u32 = ((buf[0] as u32) << 16) |
-                              ((buf[1] as u32) << 8) | (buf[2] as u32);
-        //sign extension if result is negative
+        let mut result: u32 = ((buf[0] as u32) << 16) | ((buf[1] as u32) << 8) | (buf[2] as u32);
+        // sign extension if result is negative
         if (result & 0x800000) != 0 {
             result |= 0xFF000000;
         }
         Ok(result as i32)
     }
 
-    ///Read an ADC channel and returned  24 bit value as i32
+    /// Read an ADC channel and returned  24 bit value as i32.
     pub fn read_channel(&mut self, ch1: Channel, ch2: Channel) -> Result<i32, Error<ES, EO, EI>> {
-        //wait form data ready pin to be low
+        // wait form data ready pin to be low
         self.wait_for_ready()?;
 
-        //select channel
+        // select channel
         self.write_register(Register::MUX, ch1.bits() << 4 | ch2.bits())?;
 
-        //start conversion
+        // start conversion
         self.send_command(Command::SYNC)?;
-        self.delay.delay_us(5); //t11
+        self.delay.delay_us(5); // t11
 
         self.send_command(Command::WAKEUP)?;
-        self.delay.delay_us(1); //t11
+        self.delay.delay_us(1); // t11
 
-        //read channel data
+        // read channel data
         let adc_code = self.read_raw_data()?;
 
         Ok(adc_code)
     }
 
+    /// Convert a raw ADC reading to voltage using the current config.
     pub fn convert_to_volt(&self, code: i32) -> f64 {
         (code as f64) / (0x7FFFFF as f64) * (2.0 * REF_VOLTS) / (self.config.gain.val() as f64)
     }
